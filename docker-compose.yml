@@ -1,0 +1,12 @@
+services:
+  logs:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      API_KEY: ${API_KEY:-change-me}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BODY_LIMIT_BYTES: ${BODY_LIMIT_BYTES:-1048576}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
