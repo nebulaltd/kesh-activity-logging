@@ -14,6 +14,8 @@ export interface LogRow {
   action: string | null;
   client_id: string | null;
   received_at: number;
+  remote_source: string | null;
+  remote_id: string | null;
 }
 
 export interface LogResponse {

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const EmptyStringAsUndefined = (value: unknown) => (value === '' ? undefined : value);
+
 const ConfigSchema = z
   .object({
     PORT: z.coerce.number().int().positive().default(3000),
@@ -8,8 +10,8 @@ const ConfigSchema = z
     API_KEY: z.string().min(1, 'API_KEY is required'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     BODY_LIMIT_BYTES: z.coerce.number().int().positive().default(1_048_576),
-    LOG_PULL_SOURCE_URL: z.string().url().optional(),
-    LOG_PULL_API_KEY: z.string().min(1).optional(),
+    LOG_PULL_SOURCE_URL: z.preprocess(EmptyStringAsUndefined, z.string().url().optional()),
+    LOG_PULL_API_KEY: z.preprocess(EmptyStringAsUndefined, z.string().min(1).optional()),
     LOG_PULL_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
     LOG_PULL_BATCH_SIZE: z.coerce.number().int().positive().max(1_000).default(500),
   })

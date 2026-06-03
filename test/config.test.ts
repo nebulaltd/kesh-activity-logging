@@ -11,6 +11,13 @@ describe('loadConfig log pull settings', () => {
     expect(config.LOG_PULL_BATCH_SIZE).toBe(500);
   });
 
+  test('treats blank pull env vars as disabled', () => {
+    const config = loadConfig({ API_KEY: 'test-key', LOG_PULL_SOURCE_URL: '', LOG_PULL_API_KEY: '' });
+
+    expect(config.LOG_PULL_SOURCE_URL).toBeUndefined();
+    expect(config.LOG_PULL_API_KEY).toBeUndefined();
+  });
+
   test('requires pull api key when source url is configured', () => {
     expect(() => loadConfig({ API_KEY: 'test-key', LOG_PULL_SOURCE_URL: 'https://kesh-back.example/internal/activity-logs' })).toThrow();
   });
