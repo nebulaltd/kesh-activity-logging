@@ -16,25 +16,46 @@ export interface InsertLogParams {
   action: string | null;
   client_id: string | null;
   received_at: number;
+  remote_source?: string | null;
+  remote_id?: string | null;
 }
 
 const INSERT_SQL = `
   INSERT INTO logs (
     id, timestamp, source, level, message, context,
-    trace_id, user_id, entity_type, entity_id, action, client_id, received_at
+    trace_id, user_id, entity_type, entity_id, action, client_id, received_at,
+    remote_source, remote_id
   )
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+
+const INSERT_OR_IGNORE_SQL = `
+  INSERT OR IGNORE INTO logs (
+    id, timestamp, source, level, message, context,
+    trace_id, user_id, entity_type, entity_id, action, client_id, received_at,
+    remote_source, remote_id
+  )
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `;
 
 const SELECT_COLS = `
   id, timestamp, source, level, message, context,
-  trace_id, user_id, entity_type, entity_id, action, client_id, received_at
+  trace_id, user_id, entity_type, entity_id, action, client_id, received_at,
+  remote_source, remote_id
 `;
 
 const SELECT_BY_ID_SQL = `SELECT ${SELECT_COLS} FROM logs WHERE id = ?`;
 
 export function insertLog(db: Database, params: InsertLogParams): void {
-  db.query(INSERT_SQL).run(
+  runInsert(db, INSERT_SQL, params);
+}
+
+export function insertRemoteLog(db: Database, params: InsertLogParams): boolean {
+  return runInsert(db, INSERT_OR_IGNORE_SQL, params);
+}
+
+function runInsert(db: Database, sql: string, params: InsertLogParams): boolean {
+  const result = db.query(sql).run(
     params.id,
     params.timestamp,
     params.source,
@@ -48,7 +69,11 @@ export function insertLog(db: Database, params: InsertLogParams): void {
     params.action,
     params.client_id,
     params.received_at,
+    params.remote_source ?? null,
+    params.remote_id ?? null,
   );
+
+  return result.changes > 0;
 }
 
 export function getLogById(db: Database, id: string): LogResponse | null {

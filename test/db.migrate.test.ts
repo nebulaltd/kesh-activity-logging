@@ -10,7 +10,7 @@ describe('migrations', () => {
   it('creates the logs schema on a fresh DB', () => {
     const db = new Database(':memory:');
     const applied = runMigrations(db, MIGRATIONS_DIR);
-    expect(applied).toEqual(['0001_init.sql', '0002_activity_fields.sql']);
+    expect(applied).toEqual(['0001_init.sql', '0002_activity_fields.sql', '0003_remote_log_dedup.sql']);
 
     const cols = db
       .query<{ name: string }, []>('PRAGMA table_info(logs)')
@@ -27,6 +27,8 @@ describe('migrations', () => {
       'level',
       'message',
       'received_at',
+      'remote_id',
+      'remote_source',
       'source',
       'timestamp',
       'trace_id',
@@ -45,6 +47,7 @@ describe('migrations', () => {
       'idx_logs_client_timestamp',
       'idx_logs_entity',
       'idx_logs_level_timestamp',
+      'idx_logs_remote_source_id',
       'idx_logs_source_timestamp',
       'idx_logs_timestamp',
       'idx_logs_trace_id',

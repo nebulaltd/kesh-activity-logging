@@ -18,6 +18,8 @@ export function buildTestApp(overrides?: Partial<Config>): TestApp {
     DATABASE_PATH: ':memory:',
     LOG_LEVEL: 'fatal',
     BODY_LIMIT_BYTES: 1_048_576,
+    LOG_PULL_INTERVAL_MS: 60_000,
+    LOG_PULL_BATCH_SIZE: 500,
     ...overrides,
     API_KEY: apiKey,
   };

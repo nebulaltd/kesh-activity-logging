@@ -188,6 +188,19 @@ CURSOR=$(echo "$PAGE1" | jq -r '.next_cursor')
 
 Cursors are stable: rows inserted with newer timestamps after a page is fetched will not appear in subsequent pages of that walk.
 
+## Pulling logs from kesh-back
+
+When direct pushes into this service are blocked by network allowlisting, configure the Bun background process to poll the internal `kesh-back` outbox API:
+
+```env
+LOG_PULL_SOURCE_URL=https://kesh-back.example/internal/activity-logs
+LOG_PULL_API_KEY=shared-secret
+LOG_PULL_INTERVAL_MS=60000
+LOG_PULL_BATCH_SIZE=500
+```
+
+`LOG_PULL_API_KEY` must match `ACTIVITY_LOG_INTERNAL_API_KEY` on `kesh-back`. Forge does not need a separate cron entry; the running Bun process polls on the configured interval.
+
 ## Docker
 
 ```bash
