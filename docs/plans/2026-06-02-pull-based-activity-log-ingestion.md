@@ -13,8 +13,8 @@
 ## Task 1: Add kesh-back outbox entity and migration
 
 **Files:**
-- Create: `/Users/ermanddurro/Code/Kesh/kesh-back/src/entities/activity-log-outbox.entity.ts`
-- Create: `/Users/ermanddurro/Code/Kesh/kesh-back/src/migrations/1780440000000-createActivityLogOutboxTable.ts`
+- Create: `src/entities/activity-log-outbox.entity.ts`
+- Create: `src/migrations/1780440000000-createActivityLogOutboxTable.ts`
 
 **Step 1: Write the entity**
 
@@ -28,8 +28,6 @@ Create table `activity_log_outbox` with matching columns, JSONB `context`, nulla
 
 **Step 3: Verify build**
 
-Run in `/Users/ermanddurro/Code/Kesh/kesh-back`:
-
 ```bash
 npm run build
 ```
@@ -41,11 +39,11 @@ Expected: TypeScript build succeeds.
 ## Task 2: Add kesh-back internal activity log module
 
 **Files:**
-- Create: `/Users/ermanddurro/Code/Kesh/kesh-back/src/app-api/activity-log/activity-log.module.ts`
-- Create: `/Users/ermanddurro/Code/Kesh/kesh-back/src/app-api/activity-log/activity-log.service.ts`
-- Create: `/Users/ermanddurro/Code/Kesh/kesh-back/src/app-api/activity-log/activity-log-internal.controller.ts`
-- Create: `/Users/ermanddurro/Code/Kesh/kesh-back/src/app-api/activity-log/dto/ack-activity-logs.dto.ts`
-- Modify: `/Users/ermanddurro/Code/Kesh/kesh-back/src/app-api/app-api.module.ts`
+- Create: `src/app-api/activity-log/activity-log.module.ts`
+- Create: `src/app-api/activity-log/activity-log.service.ts`
+- Create: `src/app-api/activity-log/activity-log-internal.controller.ts`
+- Create: `src/app-api/activity-log/dto/ack-activity-logs.dto.ts`
+- Modify: `src/app-api/app-api.module.ts`
 
 **Step 1: Write service tests if test harness supports module testing**
 
@@ -92,7 +90,7 @@ Expected: build succeeds.
 ## Task 3: Add kesh-back outbox writer API
 
 **Files:**
-- Modify: `/Users/ermanddurro/Code/Kesh/kesh-back/src/app-api/activity-log/activity-log.service.ts`
+- Modify: `src/app-api/activity-log/activity-log.service.ts`
 
 **Step 1: Add `record()` method**
 
