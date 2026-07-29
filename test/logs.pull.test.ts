@@ -13,6 +13,14 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function isHost(url: string | URL | Request, host: string): boolean {
+  return new URL(String(url)).hostname === host;
+}
+
+function isAck(url: string | URL | Request): boolean {
+  return new URL(String(url)).pathname.endsWith('/ack');
+}
+
 function buildConfig(env: Record<string, string> = {}): Config {
   return loadConfig({
     API_KEY: 'local-key',
@@ -65,7 +73,7 @@ describe('pullLogsOnce', () => {
     const calls: FetchCall[] = [];
     const fetchFn = async (url: string | URL | Request, init?: RequestInit) => {
       calls.push({ url: String(url), init });
-      if (String(url).endsWith('/ack')) return jsonResponse({ acknowledged: 1 });
+      if (isAck(url)) return jsonResponse({ acknowledged: 1 });
       return jsonResponse({
         items: [
           {
@@ -98,7 +106,7 @@ describe('pullLogsOnce', () => {
   test('acks duplicate remote ids without storing duplicate rows', async () => {
     const db = buildDb();
     const fetchFn = async (url: string | URL | Request) => {
-      if (String(url).endsWith('/ack')) return jsonResponse({ acknowledged: 1 });
+      if (isAck(url)) return jsonResponse({ acknowledged: 1 });
       return jsonResponse({
         items: [
           {
@@ -166,7 +174,7 @@ describe('pullLogsOnce drain loop', () => {
     const db = buildDb();
     let batch = 0;
     const fetchFn = async (url: string | URL | Request) => {
-      if (String(url).endsWith('/ack')) return jsonResponse({ acknowledged: 2 });
+      if (isAck(url)) return jsonResponse({ acknowledged: 2 });
       batch += 1;
       return jsonResponse({ items: [makeRemote(`b${batch}-1`), makeRemote(`b${batch}-2`)] });
     };
@@ -188,7 +196,7 @@ describe('pullLogsOnce drain loop', () => {
     const db = buildDb();
     let fetches = 0;
     const fetchFn = async (url: string | URL | Request) => {
-      if (String(url).endsWith('/ack')) return jsonResponse({ acknowledged: 1 });
+      if (isAck(url)) return jsonResponse({ acknowledged: 1 });
       fetches += 1;
       return jsonResponse({ items: [makeRemote('only-one')] });
     };
@@ -208,7 +216,7 @@ describe('pullLogsOnce drain loop', () => {
   test('stores the configured source name as remote_source', async () => {
     const db = buildDb();
     const fetchFn = async (url: string | URL | Request) => {
-      if (String(url).endsWith('/ack')) return jsonResponse({ acknowledged: 1 });
+      if (isAck(url)) return jsonResponse({ acknowledged: 1 });
       return jsonResponse({ items: [makeRemote('remote-1')] });
     };
 
@@ -231,10 +239,8 @@ describe('pullLogsOnce drain loop', () => {
   test('drains every configured source and reports per-source counts', async () => {
     const db = buildDb();
     const fetchFn = async (url: string | URL | Request) => {
-      const target = String(url);
-      if (target.endsWith('/ack')) return jsonResponse({ acknowledged: 1 });
-      if (target.startsWith('https://live.example'))
-        return jsonResponse({ items: [makeRemote('live-1')] });
+      if (isAck(url)) return jsonResponse({ acknowledged: 1 });
+      if (isHost(url, 'live.example')) return jsonResponse({ items: [makeRemote('live-1')] });
       return jsonResponse({ items: [makeRemote('onprem-1')] });
     };
 
@@ -260,9 +266,8 @@ describe('pullLogsOnce drain loop', () => {
   test('drains healthy sources before surfacing a failing one', async () => {
     const db = buildDb();
     const fetchFn = async (url: string | URL | Request) => {
-      const target = String(url);
-      if (target.startsWith('https://live.example')) throw new Error('tunnel down');
-      if (target.endsWith('/ack')) return jsonResponse({ acknowledged: 1 });
+      if (isHost(url, 'live.example')) throw new Error('tunnel down');
+      if (isAck(url)) return jsonResponse({ acknowledged: 1 });
       return jsonResponse({ items: [makeRemote('onprem-1')] });
     };
 
