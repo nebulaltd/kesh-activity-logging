@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "db:migrate": "bun run src/db/migrate.ts"
+    "db:migrate": "bun run src/db/migrate.ts",
+    "pull:once": "bun run src/logs/pull-once.ts"
   },
   "dependencies": {
     "fastify": "^5.0.0",
