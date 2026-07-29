@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { z } from 'zod';
-import type { Config } from '../config';
+import type { Config, LogPullSource } from '../config';
 import { newId } from '../lib/id';
 import { LOG_LEVELS } from './schema';
 import { insertRemoteLog } from './repository';
@@ -28,6 +28,24 @@ const RemoteLogsResponseSchema = z.object({ items: z.array(RemoteLogSchema) });
 
 export type RemoteLog = z.infer<typeof RemoteLogSchema>;
 
+export interface PullSourceResult {
+  name: string;
+  fetched: number;
+  inserted: number;
+  duplicates: number;
+  batches: number;
+  hitIterationCap: boolean;
+}
+
+export interface PullRunResult {
+  sources: PullSourceResult[];
+  fetched: number;
+  inserted: number;
+  duplicates: number;
+  hitIterationCap: boolean;
+  durationMs: number;
+}
+
 export interface PullLogsOnceOptions {
   db: Database;
   config: Config;
@@ -39,27 +57,42 @@ export interface LogPullerOptions extends PullLogsOnceOptions {
   logger?: { error: (error: unknown) => void };
 }
 
-export async function fetchRemoteLogs(config: Config, fetchFn: FetchLike = fetch): Promise<RemoteLog[]> {
-  if (!config.LOG_PULL_SOURCE_URL || !config.LOG_PULL_API_KEY) return [];
+interface DrainSourceOptions {
+  db: Database;
+  source: LogPullSource;
+  batchSize: number;
+  maxIterations: number;
+  fetchFn: FetchLike;
+  now: () => number;
+}
 
-  const url = new URL(config.LOG_PULL_SOURCE_URL);
-  url.searchParams.set('limit', String(config.LOG_PULL_BATCH_SIZE));
+export async function fetchRemoteLogs(
+  source: LogPullSource,
+  batchSize: number,
+  fetchFn: FetchLike = fetch,
+): Promise<RemoteLog[]> {
+  const url = new URL(source.url);
+  url.searchParams.set('limit', String(batchSize));
 
   const response = await fetchFn(url, {
-    headers: { 'x-internal-api-key': config.LOG_PULL_API_KEY },
+    headers: { 'x-internal-api-key': source.apiKey },
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch remote logs: ${response.status}`);
+    throw new Error(`Failed to fetch remote logs from ${source.name}: ${response.status}`);
   }
 
   return RemoteLogsResponseSchema.parse(await response.json()).items;
 }
 
-export async function ackRemoteLogs(config: Config, ids: string[], fetchFn: FetchLike = fetch): Promise<void> {
-  if (!config.LOG_PULL_SOURCE_URL || !config.LOG_PULL_API_KEY || ids.length === 0) return;
+export async function ackRemoteLogs(
+  source: LogPullSource,
+  ids: string[],
+  fetchFn: FetchLike = fetch,
+): Promise<void> {
+  if (ids.length === 0) return;
 
-  const url = new URL(config.LOG_PULL_SOURCE_URL);
+  const url = new URL(source.url);
   url.pathname = `${url.pathname.replace(/\/$/, '')}/ack`;
   url.search = '';
 
@@ -67,55 +100,117 @@ export async function ackRemoteLogs(config: Config, ids: string[], fetchFn: Fetc
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-internal-api-key': config.LOG_PULL_API_KEY,
+      'x-internal-api-key': source.apiKey,
     },
     body: JSON.stringify({ ids }),
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to acknowledge remote logs: ${response.status}`);
+    throw new Error(`Failed to acknowledge remote logs on ${source.name}: ${response.status}`);
   }
 }
 
-export async function pullLogsOnce({ db, config, fetchFn = fetch, now = Date.now }: PullLogsOnceOptions): Promise<void> {
-  const remoteLogs = await fetchRemoteLogs(config, fetchFn);
-  const ackIds: string[] = [];
-  const errors: unknown[] = [];
+export async function drainSource(options: DrainSourceOptions): Promise<PullSourceResult> {
+  const { db, source, batchSize, maxIterations, fetchFn, now } = options;
+  const result: PullSourceResult = {
+    name: source.name,
+    fetched: 0,
+    inserted: 0,
+    duplicates: 0,
+    batches: 0,
+    hitIterationCap: false,
+  };
 
-  for (const log of remoteLogs) {
+  while (result.batches < maxIterations) {
+    const remoteLogs = await fetchRemoteLogs(source, batchSize, fetchFn);
+    result.batches += 1;
+    result.fetched += remoteLogs.length;
+
+    const ackIds: string[] = [];
+    let insertError: unknown = null;
+
+    for (const log of remoteLogs) {
+      try {
+        const inserted = insertRemoteLog(db, {
+          id: newId(),
+          timestamp: log.timestamp,
+          source: log.source,
+          level: log.level,
+          message: log.message,
+          context: log.context ? JSON.stringify(log.context) : null,
+          trace_id: log.trace_id ?? null,
+          user_id: log.user_id ?? null,
+          entity_type: log.entity_type ?? null,
+          entity_id: log.entity_id ?? null,
+          action: log.action ?? null,
+          client_id: log.client_id ?? null,
+          received_at: now(),
+          remote_source: source.name,
+          remote_id: log.id,
+        });
+
+        if (inserted) result.inserted += 1;
+        else result.duplicates += 1;
+
+        ackIds.push(log.id);
+      } catch (error) {
+        insertError = insertError ?? error;
+        break;
+      }
+    }
+
+    await ackRemoteLogs(source, ackIds, fetchFn);
+
+    if (insertError) throw insertError;
+    if (remoteLogs.length < batchSize) return result;
+  }
+
+  result.hitIterationCap = true;
+  return result;
+}
+
+export async function pullLogsOnce({
+  db,
+  config,
+  fetchFn = fetch,
+  now = Date.now,
+}: PullLogsOnceOptions): Promise<PullRunResult> {
+  const startedAt = now();
+  const sources: PullSourceResult[] = [];
+  let firstError: unknown = null;
+
+  for (const source of config.LOG_PULL_SOURCES) {
     try {
-      insertRemoteLog(db, {
-        id: newId(),
-        timestamp: log.timestamp,
-        source: log.source,
-        level: log.level,
-        message: log.message,
-        context: log.context ? JSON.stringify(log.context) : null,
-        trace_id: log.trace_id ?? null,
-        user_id: log.user_id ?? null,
-        entity_type: log.entity_type ?? null,
-        entity_id: log.entity_id ?? null,
-        action: log.action ?? null,
-        client_id: log.client_id ?? null,
-        received_at: now(),
-        remote_source: log.source,
-        remote_id: log.id,
-      });
-      ackIds.push(log.id);
+      sources.push(
+        await drainSource({
+          db,
+          source,
+          batchSize: config.LOG_PULL_BATCH_SIZE,
+          maxIterations: config.LOG_PULL_MAX_ITERATIONS,
+          fetchFn,
+          now,
+        }),
+      );
     } catch (error) {
-      errors.push(error);
+      firstError = firstError ?? error;
     }
   }
 
-  await ackRemoteLogs(config, ackIds, fetchFn);
+  if (firstError) throw firstError;
 
-  if (errors.length > 0) {
-    throw errors[0];
-  }
+  return {
+    sources,
+    fetched: sources.reduce((total, source) => total + source.fetched, 0),
+    inserted: sources.reduce((total, source) => total + source.inserted, 0),
+    duplicates: sources.reduce((total, source) => total + source.duplicates, 0),
+    hitIterationCap: sources.some((source) => source.hitIterationCap),
+    durationMs: now() - startedAt,
+  };
 }
 
 export function startLogPuller(options: LogPullerOptions): () => void {
-  if (!options.config.LOG_PULL_SOURCE_URL) return () => undefined;
+  if (options.config.LOG_PULL_MODE !== 'interval' || options.config.LOG_PULL_SOURCES.length === 0)
+    return () => undefined;
 
   let running = false;
   const run = async () => {

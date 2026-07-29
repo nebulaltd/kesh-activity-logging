@@ -190,16 +190,82 @@ Cursors are stable: rows inserted with newer timestamps after a page is fetched 
 
 ## Pulling logs from kesh-back
 
-When direct pushes into this service are blocked by network allowlisting, configure the Bun background process to poll the internal `kesh-back` outbox API:
+When pushes into this service are blocked by network allowlisting, this service pulls buffered events from `kesh-back`'s internal outbox API instead. Every pull source needs `LOG_PULL_SOURCE_<n>_API_KEY` to match `ACTIVITY_LOG_INTERNAL_API_KEY` on that `kesh-back`.
+
+### Who is allowed to pull
+
+`LOG_PULL_MODE` decides, and it defaults to `off`:
+
+| Mode | Who pulls |
+|---|---|
+| `off` | nobody — for instances that only serve queries |
+| `interval` | the always-on server, every `LOG_PULL_INTERVAL_MS` |
+| `oneshot` | only `scripts/pull-activity-logs.sh`, driven by cron |
+
+The gate matters because the server and the cron job read the same `.env`. Without it, configuring a source for cron would also start the in-process poller.
+
+**The outbox is single-consumer.** `kesh-back` serves rows where `delivered_at IS NULL` and stamps them on ack, so two pullers against one `kesh-back` split the stream between them instead of each getting a copy. Exactly one deployment may pull from a given `kesh-back`.
+
+### Sources
 
 ```env
-LOG_PULL_SOURCE_URL=https://kesh-back.example/internal/activity-logs
-LOG_PULL_API_KEY=shared-secret
-LOG_PULL_INTERVAL_MS=60000
-LOG_PULL_BATCH_SIZE=500
+LOG_PULL_MODE=oneshot
+LOG_PULL_SOURCE_1_NAME=aws-live
+LOG_PULL_SOURCE_1_URL=http://127.0.0.1:5055/internal/activity-logs
+LOG_PULL_SOURCE_1_API_KEY=shared-secret
+LOG_PULL_SOURCE_2_NAME=onprem
+LOG_PULL_SOURCE_2_URL=http://127.0.0.1:5050/internal/activity-logs
+LOG_PULL_SOURCE_2_API_KEY=shared-secret
+LOG_PULL_BATCH_SIZE=1000
+LOG_PULL_MAX_ITERATIONS=20
 ```
 
-`LOG_PULL_API_KEY` must match `ACTIVITY_LOG_INTERNAL_API_KEY` on `kesh-back`. Forge does not need a separate cron entry; the running Bun process polls on the configured interval.
+The source name is stored as `remote_source` on every row, so it answers "which datacenter served this action" after a failover. Configure the standby as its own source and the archive keeps working when it takes over, with no env change during the incident.
+
+`LOG_PULL_SOURCE_URL` / `LOG_PULL_API_KEY` still work as a single-source shorthand and resolve to a source named `default`. Indexed sources win when both are present.
+
+Each run drains a source until a partial batch arrives or `LOG_PULL_MAX_ITERATIONS` batches have been fetched, so throughput is `BATCH_SIZE × MAX_ITERATIONS` per run rather than one batch.
+
+### Scheduled pull on-prem
+
+```bash
+cp .env.example .env            # set API_KEY, LOG_PULL_MODE=oneshot, sources, PULL_SSH_*
+scripts/pull-activity-logs.sh tunnel-test    # verify the SSH tunnel only
+scripts/pull-activity-logs.sh                # one real run
+scripts/install-cron.sh install              # schedule from LOG_PULL_CRON_SCHEDULE
+scripts/install-cron.sh show
+scripts/install-cron.sh remove
+```
+
+The wrapper opens the SSH tunnel, runs the pull, and tears the tunnel down, so a broken tunnel is rebuilt on the next run rather than needing `autossh`. It takes a `mkdir` lock so overlapping cron runs cannot double-pull, and it logs to `logs/activity-log-pull.log`.
+
+Set `BUN_BIN` to the absolute path of `bun`. Cron does not inherit your shell `PATH`, and this is the most common reason a scheduled pull never runs.
+
+Re-running `install-cron.sh install` replaces the existing entry, so it is the correct way to change the schedule. Other crontab entries are preserved. Quote the schedule: `LOG_PULL_CRON_SCHEDULE="*/5 * * * *"`.
+
+### Knowing that it works
+
+Every run writes a summary row into this service's own store:
+
+```bash
+curl -s "localhost:3000/logs?action=pull_run&limit=3" -H "x-api-key: $API_KEY"
+```
+
+- `level: info` — healthy; `context` carries per-source counts and `duration_ms`.
+- `level: warn` with `hit_iteration_cap: true` — the run succeeded but the outbox is falling behind. Raise `LOG_PULL_BATCH_SIZE`, `LOG_PULL_MAX_ITERATIONS`, or the frequency.
+- `action: pull_run_failed` — the run failed; the message carries the cause.
+
+A failed run also exits non-zero and emails `PULL_ALERT_EMAIL` when set. If it is unset the script logs that alerting is disabled rather than failing quietly.
+
+Neither of those catches "cron stopped running at all". For that, either set `LOG_PULL_HEARTBEAT_URL` to a dead-man-switch endpoint pinged after every successful run, or alert on the newest `pull_run` row being older than a few intervals.
+
+### Recovering the archive
+
+`kesh-back` never deletes acked outbox rows, so re-pulling is always possible. If this store is lost, clear the stamps for the affected window on `kesh-back` and run the pull again:
+
+```sql
+UPDATE activity_log_outbox SET delivered_at = NULL WHERE delivered_at > now() - interval '7 days';
+```
 
 ## Docker
 
