@@ -83,16 +83,49 @@ acquire_lock() {
     return 1
 }
 
+# Reads the intended value of a key straight from the env file: quotes stripped and the
+# correct \$ escape resolved, so it can be compared against what the shell actually parsed.
+read_env_literal() {
+    local key="$1" value
+    value="$(sed -n -E "s/^[[:space:]]*(export[[:space:]]+)?${key}[[:space:]]*=[[:space:]]*(.*)\$/\\2/p" "$ENV_FILE" | tail -n 1)"
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    value="${value//\\\$/\$}"
+    printf '%s' "$value"
+}
+
+# A bare $ inside an env value is expanded by the shell (and by Bun) before anything sees it,
+# silently truncating secrets. Refuse to run on a value that did not survive parsing.
+assert_env_intact() {
+    local key="$1" literal parsed
+    literal="$(read_env_literal "$key")"
+    [ -n "$literal" ] || return 0
+    parsed="$(eval "printf '%s' \"\${$key:-}\"")"
+    if [ "$literal" != "$parsed" ]; then
+        log_message "ERROR" "$key was mangled while loading $ENV_FILE (${#literal} chars in the file, ${#parsed} after parsing)"
+        log_message "ERROR" "escape every \$ in its value as \\\$ — an unescaped \$NAME expands to nothing"
+        return 1
+    fi
+}
+
 load_env() {
     if [ ! -f "$ENV_FILE" ]; then
         log_message "ERROR" "Env file not found: $ENV_FILE"
         return 1
     fi
 
-    set -a -f
+    # -u would abort the whole script on an unset $NAME inside the file, before any logging;
+    # tolerate it here so the mangled value is reported by assert_env_intact instead.
+    set -a -f +u
     # shellcheck disable=SC1090
     . "$ENV_FILE"
-    set +a +f
+    set +a +f -u
+
+    local key status=0
+    for key in API_KEY LOG_PULL_API_KEY $(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?(LOG_PULL_SOURCE_[0-9]+_API_KEY)[[:space:]]*=.*/\2/p' "$ENV_FILE"); do
+        assert_env_intact "$key" || status=1
+    done
+    return "$status"
 }
 
 resolve_bun() {
