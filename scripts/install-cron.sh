@@ -72,7 +72,9 @@ install_entry() {
         return 1
     fi
 
-    local entry="$schedule cd $PROJECT_DIR && $PULL_SCRIPT >>$CRON_LOG 2>&1 $MARKER"
+    # mkdir first: cron's shell opens the >> target before running the command, so a missing
+    # log directory (every fresh zero-downtime release) would skip the pull without a trace.
+    local entry="$schedule cd $PROJECT_DIR && mkdir -p $(dirname "$CRON_LOG") && $PULL_SCRIPT >>$CRON_LOG 2>&1 $MARKER"
 
     mkdir -p "$(dirname "$CRON_LOG")"
 
