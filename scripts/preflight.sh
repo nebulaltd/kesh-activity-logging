@@ -341,6 +341,36 @@ else
     note "no pull log at $PULL_LOG_FILE — the wrapper has never run"
 fi
 
+# ---------------------------------------------------------------- 10. archive sync
+step '10. archive sync target'
+if [ -z "${ARCHIVE_SYNC_HOST:-}" ]; then
+    note 'ARCHIVE_SYNC_HOST unset — archive is not copied anywhere (optional)'
+elif [ -z "${ARCHIVE_SYNC_USER:-}" ] || [ -z "${ARCHIVE_SYNC_PATH:-}" ]; then
+    fail 'ARCHIVE_SYNC_HOST is set but ARCHIVE_SYNC_USER or ARCHIVE_SYNC_PATH is empty'
+    action "set ARCHIVE_SYNC_USER and ARCHIVE_SYNC_PATH in $ENV_FILE"
+else
+    SYNC_TARGET="$ARCHIVE_SYNC_USER@$ARCHIVE_SYNC_HOST"
+    SYNC_DIR="$(dirname "$ARCHIVE_SYNC_PATH")"
+    SYNC_OUT="$(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 \
+        ${ARCHIVE_SYNC_KEY:+-i "$ARCHIVE_SYNC_KEY"} ${ARCHIVE_SYNC_PORT:+-p "$ARCHIVE_SYNC_PORT"} \
+        "$SYNC_TARGET" "test -d $(printf '%q' "$SYNC_DIR") && test -w $(printf '%q' "$SYNC_DIR") && echo writable" 2>&1)"
+    case "$SYNC_OUT" in
+        *writable) pass "$SYNC_TARGET: $SYNC_DIR exists and is writable" ;;
+        *'Permission denied'*)
+            fail "$SYNC_TARGET: SSH key rejected"
+            action "add $(whoami)'s public key (~/.ssh/id_*.pub) to $ARCHIVE_SYNC_USER@$ARCHIVE_SYNC_HOST:~/.ssh/authorized_keys"
+            ;;
+        '')
+            fail "$SYNC_TARGET: $SYNC_DIR is missing or not writable by $ARCHIVE_SYNC_USER"
+            action "on $ARCHIVE_SYNC_HOST: mkdir -p $SYNC_DIR (as $ARCHIVE_SYNC_USER)"
+            ;;
+        *)
+            fail "$SYNC_TARGET: $(printf '%s' "$SYNC_OUT" | head -c 200)"
+            action "check that $(hostname) can reach $ARCHIVE_SYNC_HOST on SSH"
+            ;;
+    esac
+fi
+
 # ---------------------------------------------------------------- verdict
 printf '\n=== verdict: %s failure(s), %s warning(s) ===\n' "$FAILURES" "$WARNINGS"
 if [ "${#ACTIONS[@]}" -gt 0 ]; then

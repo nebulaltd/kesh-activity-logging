@@ -213,6 +213,83 @@ rotate_logs() {
     fi
 }
 
+archive_ssh_args() {
+    local port_flag="$1"
+    local args=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
+    [ -n "${ARCHIVE_SYNC_KEY:-}" ] && args+=(-i "$ARCHIVE_SYNC_KEY")
+    [ -n "${ARCHIVE_SYNC_PORT:-}" ] && args+=("$port_flag" "$ARCHIVE_SYNC_PORT")
+    printf '%s\n' "${args[@]}"
+}
+
+# Copies a snapshot to ARCHIVE_SYNC_PATH under a temporary name, then renames it into place so
+# readers on the far side only ever open a complete file. Stale -wal/-shm sidecars are removed:
+# the snapshot is not in WAL mode, and a leftover pair from an older WAL-mode copy is misleading.
+publish_snapshot() {
+    local db_path="$1" snapshot="$2"
+    local target="$ARCHIVE_SYNC_USER@$ARCHIVE_SYNC_HOST"
+    local incoming="$ARCHIVE_SYNC_PATH.incoming"
+    local output rows bytes
+    local -a ssh_args scp_args
+    mapfile -t ssh_args < <(archive_ssh_args -p)
+    mapfile -t scp_args < <(archive_ssh_args -P)
+
+    # VACUUM INTO folds in the WAL and writes one self-contained, non-WAL file; copying logs.db
+    # alone would miss writes still in logs.db-wal. It only reads the source, but the connection
+    # must not be -readonly: when no other process holds the archive open, SQLite has deleted
+    # logs.db-shm, and a read-only connection cannot recreate it (SQLITE_CANTOPEN, error 14).
+    if ! output="$(sqlite3 -init /dev/null "$db_path" "VACUUM INTO '$snapshot';" 2>&1)"; then
+        log_message "ERROR" "Could not snapshot $db_path: $output"
+        return 1
+    fi
+    rows="$(sqlite3 -init /dev/null -readonly "$snapshot" 'SELECT count(*) FROM logs;' 2>/dev/null)"
+    bytes="$(wc -c <"$snapshot" | tr -d ' ')"
+
+    if ! output="$(scp -q "${scp_args[@]}" "$snapshot" "$target:$incoming" 2>&1)"; then
+        log_message "ERROR" "Could not copy snapshot to $target:$incoming: $output"
+        return 1
+    fi
+
+    local remote_cmd
+    remote_cmd="chmod 644 $(printf '%q' "$incoming") && mv -f $(printf '%q' "$incoming") $(printf '%q' "$ARCHIVE_SYNC_PATH") && rm -f $(printf '%q' "$ARCHIVE_SYNC_PATH-wal") $(printf '%q' "$ARCHIVE_SYNC_PATH-shm")"
+    if ! output="$(ssh "${ssh_args[@]}" "$target" "$remote_cmd" 2>&1)"; then
+        log_message "ERROR" "Could not swap the snapshot into place on $target: $output"
+        return 1
+    fi
+
+    log_message "INFO" "Archive synced to $target:$ARCHIVE_SYNC_PATH ($rows rows, $bytes bytes)"
+}
+
+sync_archive() {
+    if [ -z "${ARCHIVE_SYNC_HOST:-}" ]; then
+        return 0
+    fi
+    if [ -z "${ARCHIVE_SYNC_USER:-}" ] || [ -z "${ARCHIVE_SYNC_PATH:-}" ]; then
+        log_message "ERROR" "ARCHIVE_SYNC_HOST is set but ARCHIVE_SYNC_USER or ARCHIVE_SYNC_PATH is empty"
+        return 1
+    fi
+    if ! command -v sqlite3 >/dev/null 2>&1; then
+        log_message "ERROR" "sqlite3 not found; it is needed to snapshot the archive for sync"
+        return 1
+    fi
+
+    local db_path="${DATABASE_PATH:-./data/logs.db}"
+    case "$db_path" in
+        /*) ;;
+        *) db_path="$PROJECT_DIR/${db_path#./}" ;;
+    esac
+    if [ ! -f "$db_path" ]; then
+        log_message "ERROR" "Archive database not found at $db_path; nothing to sync"
+        return 1
+    fi
+
+    local work_dir status
+    work_dir="$(mktemp -d)"
+    publish_snapshot "$db_path" "$work_dir/logs.db"
+    status=$?
+    rm -rf "$work_dir"
+    return "$status"
+}
+
 main() {
     acquire_lock || exit 0
 
@@ -247,6 +324,11 @@ main() {
 
     if [ "$status" -eq 0 ]; then
         log_message "INFO" "=== Activity log pull completed ==="
+        if ! sync_archive; then
+            send_notification "FAILED" "Pull succeeded, but syncing the archive to ${ARCHIVE_SYNC_HOST} failed"
+            rotate_logs
+            exit 1
+        fi
         rotate_logs
         exit 0
     fi
@@ -262,6 +344,16 @@ case "${1:-}" in
         load_env || exit 1
         open_ssh_tunnel || exit 1
         log_message "INFO" "Tunnel test succeeded"
+        exit 0
+        ;;
+    "sync")
+        acquire_lock || exit 0
+        load_env || exit 1
+        if [ -z "${ARCHIVE_SYNC_HOST:-}" ]; then
+            log_message "ERROR" "ARCHIVE_SYNC_HOST is not set; nothing to sync to"
+            exit 1
+        fi
+        sync_archive || exit 1
         exit 0
         ;;
     *)
