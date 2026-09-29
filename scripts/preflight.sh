@@ -255,8 +255,9 @@ else
         SRC_KEY="$(printf '%s\n' "$URL" | sed -n 3p)"
 
         BODY_FILE="$(mktemp)"
+        ERR_FILE="$(mktemp)"
         CODE="$(curl -sS -o "$BODY_FILE" -w '%{http_code}' --max-time 15 \
-            -H "x-internal-api-key: $SRC_KEY" "${SRC_URL}?limit=1" 2>/dev/null || true)"
+            -H "x-internal-api-key: $SRC_KEY" "${SRC_URL}?limit=1" 2>"$ERR_FILE" || true)"
         CODE="${CODE:-000}"; CODE="${CODE: -3}"   # curl still writes a code when it fails
         case "$CODE" in
             200)
@@ -277,14 +278,20 @@ else
                 ;;
             000)
                 fail "$NAME: connection failed"
-                action 'bring the tunnel up first: scripts/preflight.sh --tunnel'
+                note "probed ${SRC_URL}?limit=1"
+                [ -s "$ERR_FILE" ] && note "$(head -c 300 "$ERR_FILE")"
+                if [ -n "${PULL_SSH_HOST:-}" ]; then
+                    action 'bring the tunnel up first: scripts/preflight.sh --tunnel'
+                else
+                    action "this host cannot reach ${SRC_URL%%/internal/*} — check DNS and outbound firewall"
+                fi
                 ;;
             *)
                 fail "$NAME: HTTP $CODE"
                 note "$(head -c 200 "$BODY_FILE")"
                 ;;
         esac
-        rm -f "$BODY_FILE"
+        rm -f "$BODY_FILE" "$ERR_FILE"
         INDEX=$((INDEX + 1))
     done
 fi
