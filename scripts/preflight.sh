@@ -337,6 +337,9 @@ fi
 if [ -f "$PULL_LOG_FILE" ]; then
     note "last lines of $PULL_LOG_FILE:"
     tail -n 3 "$PULL_LOG_FILE" | while IFS= read -r line; do note "  $line"; done
+elif [ "${LAST_PULL:-never}" != "never" ] && [ "${LAST_PULL:-}" != "?" ]; then
+    note "no pull log at $PULL_LOG_FILE yet — logs/ is per release, so a deploy starts it empty;"
+    note "the next cron run recreates it (last successful pull: $LAST_PULL)"
 else
     note "no pull log at $PULL_LOG_FILE — the wrapper has never run"
 fi
