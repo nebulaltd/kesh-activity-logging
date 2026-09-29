@@ -53,6 +53,9 @@ port_open() {
     (exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1
 }
 
+# -init /dev/null skips ~/.sqliterc, whose .headers/.mode would leak into captured values.
+sqlite() { sqlite3 -init /dev/null "$@"; }
+
 printf '=== activity-log pipeline preflight on %s ===\n' "$(hostname)"
 
 # ---------------------------------------------------------------- 1. environment
@@ -113,7 +116,7 @@ if [ ! -f "$DB_PATH" ]; then
 elif ! command -v sqlite3 >/dev/null 2>&1; then
     warn 'sqlite3 CLI not installed; skipping database inspection'
 else
-    MIGRATIONS="$(sqlite3 -readonly "$DB_PATH" "SELECT group_concat(id,' ') FROM _migrations;" 2>/dev/null || true)"
+    MIGRATIONS="$(sqlite -readonly "$DB_PATH" "SELECT group_concat(id,' ') FROM _migrations;" 2>/dev/null || true)"
     if [ -z "$MIGRATIONS" ]; then
         fail 'no _migrations rows — schema not applied'
         action 'run: bun run db:migrate'
@@ -126,12 +129,12 @@ else
         esac
     fi
 
-    ROWS="$(sqlite3 -readonly "$DB_PATH" 'SELECT count(*) FROM logs;' 2>/dev/null || echo '?')"
-    NEWEST="$(sqlite3 -readonly "$DB_PATH" "SELECT COALESCE(datetime(max(timestamp)/1000,'unixepoch','localtime'),'never') FROM logs;" 2>/dev/null || echo '?')"
-    LAST_PULL="$(sqlite3 -readonly "$DB_PATH" "SELECT COALESCE(datetime(max(timestamp)/1000,'unixepoch','localtime'),'never') FROM logs WHERE action='pull_run';" 2>/dev/null || echo '?')"
+    ROWS="$(sqlite -readonly "$DB_PATH" 'SELECT count(*) FROM logs;' 2>/dev/null || echo '?')"
+    NEWEST="$(sqlite -readonly "$DB_PATH" "SELECT COALESCE(datetime(max(timestamp)/1000,'unixepoch','localtime'),'never') FROM logs;" 2>/dev/null || echo '?')"
+    LAST_PULL="$(sqlite -readonly "$DB_PATH" "SELECT COALESCE(datetime(max(timestamp)/1000,'unixepoch','localtime'),'never') FROM logs WHERE action='pull_run';" 2>/dev/null || echo '?')"
     note "rows=$ROWS  newest_event=$NEWEST  last_successful_pull=$LAST_PULL"
 
-    if sqlite3 "$DB_PATH" 'BEGIN IMMEDIATE; ROLLBACK;' >/dev/null 2>&1; then
+    if sqlite "$DB_PATH" 'BEGIN IMMEDIATE; ROLLBACK;' >/dev/null 2>&1; then
         pass "writable by $(whoami)"
     else
         fail "cannot acquire a write lock on $DB_PATH as $(whoami)"
