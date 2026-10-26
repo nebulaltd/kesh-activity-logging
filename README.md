@@ -1,6 +1,6 @@
 # kesh-activity-logging
 
-HTTP API that captures structured log events from other systems, stores them in SQLite, and exposes filtered retrieval. See [SPEC.md](SPEC.md) for the contract.
+HTTP API that captures structured log events from other systems, stores them in SQLite, and exposes filtered retrieval. See [SPEC.md](SPEC.md) for the contract and [docs/sqlite-guide.md](docs/sqlite-guide.md) for querying the database directly.
 
 ## Stack
 
@@ -190,7 +190,7 @@ Cursors are stable: rows inserted with newer timestamps after a page is fetched 
 
 ## Pulling logs from kesh-back
 
-When pushes into this service are blocked by network allowlisting, this service pulls buffered events from `kesh-back`'s internal outbox API instead. Every pull source needs `LOG_PULL_SOURCE_<n>_API_KEY` to match `ACTIVITY_LOG_INTERNAL_API_KEY` on that `kesh-back`.
+When pushes into this service are blocked by network allowlisting, this service pulls buffered events from `kesh-back`'s internal outbox API instead. Every pull source needs `LOG_PULL_SOURCE_<n>_API_KEY` to match `ACTIVITY_LOG_INTERNAL_API_KEY` on that `kesh-back`. See [docs/activity-log-pipeline.md](docs/activity-log-pipeline.md) for the end-to-end flow, secrets, and failure modes.
 
 ### Who is allowed to pull
 
@@ -230,12 +230,24 @@ Each run drains a source until a partial batch arrives or `LOG_PULL_MAX_ITERATIO
 
 ```bash
 cp .env.example .env            # set API_KEY, LOG_PULL_MODE=oneshot, sources, PULL_SSH_*
+scripts/preflight.sh                         # check every link, name the first broken one
+scripts/preflight.sh --tunnel                # same, but open the SSH tunnel first
 scripts/pull-activity-logs.sh tunnel-test    # verify the SSH tunnel only
 scripts/pull-activity-logs.sh                # one real run
 scripts/install-cron.sh install              # schedule from LOG_PULL_CRON_SCHEDULE
 scripts/install-cron.sh show
 scripts/install-cron.sh remove
 ```
+
+Start with `scripts/preflight.sh`. It is read-only — no tunnel, no rows, no config changes — and
+checks the env file, `BUN_BIN`, the database path and its migrations, whether `API_KEY` survived
+parsing, the resolved pull mode and sources, tunnel reachability, the kesh-back outbox endpoint
+(distinguishing 200/401/404/refused), the local query API, and the cron entry. It ends with a
+numbered list of what to fix and exits non-zero if anything blocks a pull.
+
+Escape every `$` in a secret as `\$`. An unescaped `$NAME` is expanded away by both Bun and the
+shell, which truncates the value; the pull wrapper now refuses to run when a key does not survive
+parsing instead of failing later with an unexplained `401`.
 
 The wrapper opens the SSH tunnel, runs the pull, and tears the tunnel down, so a broken tunnel is rebuilt on the next run rather than needing `autossh`. It takes a `mkdir` lock so overlapping cron runs cannot double-pull, and it logs to `logs/activity-log-pull.log`.
 
